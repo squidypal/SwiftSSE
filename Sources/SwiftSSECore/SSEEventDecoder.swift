@@ -5,6 +5,18 @@
 //  Created by squidypal on 2026-01-19.
 //
 
+// This parses the SSE wire format into SSEEvent objects
+
+// Format:
+
+//id: 123
+//event: message
+//data: first line
+//data: second line
+
+//id: 124
+//data: another event
+
 import Foundation
 
 public protocol SSEEventDecoder {
@@ -12,6 +24,7 @@ public protocol SSEEventDecoder {
 }
 
 public final class DefaultSSEEventDecoder: SSEEventDecoder {
+    // buffer holds incomplete data, current event accumulates fields
     private var buffer = ""
     private var currentEvent = EventBuilder()
     
