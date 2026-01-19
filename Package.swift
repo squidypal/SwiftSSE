@@ -10,7 +10,7 @@ let package = Package(
     products: [
         .library(name: "SwiftSSECore", targets: ["SwiftSSECore"]),
         .library(name: "SwiftSSEServer", targets: ["SwiftSSEServer"]),
-        .library(name: "SwiftSSEClient", targets: ["SwiftSSEClient"]),
+        //.library(name: "SwiftSSEClient", targets: ["SwiftSSEClient"]),
     ],
     dependencies: [
         .package(url: "https://github.com/vapor/vapor.git", from: "4.0.0"),

@@ -6,5 +6,47 @@
 //
 
 import Foundation
+import Vapor
+import SwiftSSECore
+
+public actor EventStreamWriter {
+    private let continuation: AsyncStream<Data>.Continuation
+    private let sseEncoder: SSEEventEncoder
+    private let jsonEncoder: JSONEncoder
+    private var isClosed = false
+
+    init(
+        continuation: AsyncStream<Data>.Continuation,
+        sseEncoder: SSEEventEncoder = DefaultSSEEventEncoder(),
+        jsonEncoder: JSONEncoder = JSONEncoder()
+    ) {
+        self.continuation = continuation
+        self.sseEncoder = sseEncoder
+        self.jsonEncoder = jsonEncoder
+    }
+    
+    public func send(_ event: SSEEvent) throws {
+        guard !isClosed else {
+            throw Abort(.internalServerError, reason: "Stream is closed")
+        }
+        
+        let data = sseEncoder.encode(event)
+        continuation.yield(data)
+    }
+    
+    public func send<T: Encodable>(event: String? = nil, payload: T, encoder: JSONEncoder? = nil) throws {
+        let encoder = encoder ?? jsonEncoder
+        let jsonData = try encoder.encode(payload)
+        let jsonString = String(data: jsonData, encoding: .utf8) ?? ""
+        
+        try send(SSEEvent(event: event, data: jsonString))
+    }
+    
+    public func close() {
+        guard !isClosed else { return }
+        isClosed = true
+        continuation.finish()
+    }
+}
 
 
