@@ -5,18 +5,18 @@
 //  Created by squidypal on 2026-01-19.
 //
 
-import Foundation
 import Vapor
+import Foundation
 import SwiftSSECore
 
 public actor EventStreamWriter {
-    private let continuation: AsyncStream<Data>.Continuation
+    private let continuation: AsyncStream<ByteBuffer>.Continuation
     private let sseEncoder: SSEEventEncoder
     private let jsonEncoder: JSONEncoder
     private var isClosed = false
 
     init(
-        continuation: AsyncStream<Data>.Continuation,
+        continuation: AsyncStream<ByteBuffer>.Continuation,
         sseEncoder: SSEEventEncoder = DefaultSSEEventEncoder(),
         jsonEncoder: JSONEncoder = JSONEncoder()
     ) {
@@ -31,7 +31,7 @@ public actor EventStreamWriter {
         }
         
         let data = sseEncoder.encode(event)
-        continuation.yield(data)
+        continuation.yield(ByteBuffer(data: data))
     }
     
     public func send<T: Encodable>(event: String? = nil, payload: T, encoder: JSONEncoder? = nil) throws {
@@ -48,5 +48,3 @@ public actor EventStreamWriter {
         continuation.finish()
     }
 }
-
-
