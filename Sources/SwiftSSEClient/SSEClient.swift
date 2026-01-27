@@ -32,7 +32,6 @@ public actor SSEClient {
     
     private var lastEventId: String?
     private var serverRetryInterval: TimeInterval?
-    private var currentTask: Task<Void, Never>?
     
     #if os(Linux)
     private var httpClient: HTTPClient?
@@ -67,18 +66,17 @@ public actor SSEClient {
         TypedSSEEventStream(client: self, eventType: eventType, decoder: decoder ?? self.decoder)
     }
     
-    internal nonisolated func connect() -> AsyncStream<SSEEvent> {
-        AsyncStream { continuation in
+    internal nonisolated func connect() -> AsyncThrowingStream<SSEEvent, Error> {
+        AsyncThrowingStream { continuation in
             let task = Task {
                 var attemptCount = 0
                 
                 while !Task.isCancelled {
                     do {
                         try await streamEvents(continuation: continuation)
+                        attemptCount = 0
                         
-                        guard shouldReconnect() else {
-                            break
-                        }
+                        guard shouldReconnect() else { break }
                         
                         let retry = await getServerRetryInterval()
                         let delay = calculateDelay(attempt: attemptCount, serverRetry: retry)
@@ -89,6 +87,7 @@ public actor SSEClient {
                         break
                     } catch {
                         guard shouldReconnect() else {
+                            continuation.finish(throwing: error)
                             break
                         }
                         
@@ -108,7 +107,7 @@ public actor SSEClient {
         }
     }
     
-    private func streamEvents(continuation: AsyncStream<SSEEvent>.Continuation) async throws {
+    private func streamEvents(continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation) async throws {
         #if os(Linux)
         try await streamEventsLinux(continuation: continuation)
         #else
@@ -117,10 +116,11 @@ public actor SSEClient {
     }
     
     #if !os(Linux)
-    private func streamEventsApple(continuation: AsyncStream<SSEEvent>.Continuation) async throws {
+    private func streamEventsApple(continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation) async throws {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
         
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)
@@ -138,35 +138,19 @@ public actor SSEClient {
         }
         
         let eventDecoder = DefaultSSEEventDecoder()
-        var buffer = Data()
         
         for try await byte in bytes {
-            buffer.append(byte)
+            let events = eventDecoder.decode(Data([byte]))
             
-            if buffer.count >= 1024 {
-                let events = eventDecoder.decode(buffer)
-                buffer.removeAll(keepingCapacity: true)
-                
-                for event in events {
-                    if let id = event.id {
-                        await updateLastEventId(id)
-                    }
-                    
-                    if let retry = event.retry {
-                        await updateRetryInterval(TimeInterval(retry) / 1000.0)
-                    }
-                    
-                    continuation.yield(event)
-                }
-            }
-        }
-        
-        if !buffer.isEmpty {
-            let events = eventDecoder.decode(buffer)
             for event in events {
                 if let id = event.id {
-                    await updateLastEventId(id)
+                    lastEventId = id
                 }
+                
+                if let retry = event.retry {
+                    serverRetryInterval = TimeInterval(retry) / 1000.0
+                }
+                
                 continuation.yield(event)
             }
         }
@@ -174,19 +158,19 @@ public actor SSEClient {
     #endif
     
     #if os(Linux)
-    private func streamEventsLinux(continuation: AsyncStream<SSEEvent>.Continuation) async throws {
+    private func streamEventsLinux(continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation) async throws {
         if httpClient == nil {
             httpClient = HTTPClient(eventLoopGroupProvider: .singleton)
         }
         
         guard let client = httpClient else {
-            struct ClientNotInitializedError: Error {}
-            throw ClientNotInitializedError()
+            throw SSEClientError.clientNotInitialized
         }
         
         var request = HTTPClientRequest(url: url.absoluteString)
         request.method = .GET
         request.headers.add(name: "Accept", value: "text/event-stream")
+        request.headers.add(name: "Cache-Control", value: "no-cache")
         
         for (key, value) in headers {
             request.headers.add(name: key, value: value)
@@ -199,8 +183,7 @@ public actor SSEClient {
         let response = try await client.execute(request, timeout: .none)
         
         guard (200...299).contains(response.status.code) else {
-            struct BadResponseError: Error {}
-            throw BadResponseError()
+            throw SSEClientError.badResponse(Int(response.status.code))
         }
         
         let eventDecoder = DefaultSSEEventDecoder()
@@ -211,11 +194,11 @@ public actor SSEClient {
             
             for event in events {
                 if let id = event.id {
-                    await updateLastEventId(id)
+                    lastEventId = id
                 }
                 
                 if let retry = event.retry {
-                    await updateRetryInterval(TimeInterval(retry) / 1000.0)
+                    serverRetryInterval = TimeInterval(retry) / 1000.0
                 }
                 
                 continuation.yield(event)
@@ -224,15 +207,7 @@ public actor SSEClient {
     }
     #endif
     
-    private func updateLastEventId(_ id: String) async {
-        lastEventId = id
-    }
-    
-    private func updateRetryInterval(_ interval: TimeInterval) async {
-        serverRetryInterval = interval
-    }
-    
-    private func getServerRetryInterval() async -> TimeInterval? {
+    private func getServerRetryInterval() -> TimeInterval? {
         serverRetryInterval
     }
     
@@ -251,15 +226,18 @@ public actor SSEClient {
         }
         
         switch reconnectStrategy {
-        case .never:
-            return 0
-        case .immediate:
+        case .never, .immediate:
             return 0
         case .exponentialBackoff(let base, let max):
             let delay = base * pow(2.0, Double(attempt))
             return min(delay, max)
         }
     }
+}
+
+public enum SSEClientError: Error {
+    case clientNotInitialized
+    case badResponse(Int)
 }
 
 public struct SSEEventStream: AsyncSequence {
@@ -276,19 +254,19 @@ public struct SSEEventStream: AsyncSequence {
     }
     
     public struct AsyncIterator: AsyncIteratorProtocol {
-        private var iterator: AsyncStream<SSEEvent>.Iterator
+        private var iterator: AsyncThrowingStream<SSEEvent, Error>.AsyncIterator
         
-        init(stream: AsyncStream<SSEEvent>) {
+        init(stream: AsyncThrowingStream<SSEEvent, Error>) {
             self.iterator = stream.makeAsyncIterator()
         }
         
         public mutating func next() async throws -> SSEEvent? {
-            await iterator.next()
+            try await iterator.next()
         }
     }
 }
 
-public struct TypedSSEEventStream<T: Decodable>: AsyncSequence where T: Sendable {
+public struct TypedSSEEventStream<T: Decodable & Sendable>: AsyncSequence {
     public typealias Element = T
     
     private let client: SSEClient
@@ -310,18 +288,18 @@ public struct TypedSSEEventStream<T: Decodable>: AsyncSequence where T: Sendable
     }
     
     public struct AsyncIterator: AsyncIteratorProtocol {
-        private var iterator: AsyncStream<SSEEvent>.Iterator
+        private var iterator: AsyncThrowingStream<SSEEvent, Error>.AsyncIterator
         private let eventType: String
         private let decoder: JSONDecoder
         
-        init(stream: AsyncStream<SSEEvent>, eventType: String, decoder: JSONDecoder) {
+        init(stream: AsyncThrowingStream<SSEEvent, Error>, eventType: String, decoder: JSONDecoder) {
             self.iterator = stream.makeAsyncIterator()
             self.eventType = eventType
             self.decoder = decoder
         }
         
         public mutating func next() async throws -> T? {
-            while let event = await iterator.next() {
+            while let event = try await iterator.next() {
                 if event.event == eventType {
                     return try event.decode(T.self, decoder: decoder)
                 }

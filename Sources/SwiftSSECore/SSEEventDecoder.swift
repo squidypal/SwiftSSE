@@ -25,7 +25,6 @@ public final class DefaultSSEEventDecoder: SSEEventDecoder {
         
         var processedText = text
         
-        // Strip UTF-8 BOM (0xEF 0xBB 0xBF) at stream start
         if !hasParsedBOM {
             hasParsedBOM = true
             if processedText.hasPrefix("\u{FEFF}") {
@@ -36,10 +35,7 @@ public final class DefaultSSEEventDecoder: SSEEventDecoder {
         buffer += processedText
         var events: [SSEEvent] = []
         
-        while let newlineRange = buffer.range(of: "\n") {
-            let line = String(buffer[..<newlineRange.lowerBound])
-            buffer.removeSubrange(...newlineRange.lowerBound)
-            
+        while let line = extractLine() {
             if let event = processLine(line) {
                 events.append(event)
             }
@@ -47,20 +43,48 @@ public final class DefaultSSEEventDecoder: SSEEventDecoder {
         return events
     }
     
-    private func processLine(_ line: String) -> SSEEvent? {
-        let trimmed = line.description.trimmingCharacters(in: .whitespaces)
+    private func extractLine() -> String? {
+        var lineEndIndex: String.Index?
+        var skipCount = 1
         
-        if trimmed.isEmpty {
-            return currentEvent.build()
+        for i in buffer.indices {
+            let char = buffer[i]
+            if char == "\r" {
+                lineEndIndex = i
+                let nextIndex = buffer.index(after: i)
+                if nextIndex < buffer.endIndex && buffer[nextIndex] == "\n" {
+                    skipCount = 2
+                }
+                break
+            } else if char == "\n" {
+                lineEndIndex = i
+                break
+            }
         }
         
-        if trimmed.hasPrefix(":") {
+        guard let endIndex = lineEndIndex else {
             return nil
         }
         
-        if let colonIndex = trimmed.firstIndex(of: ":") {
-            let field = String(trimmed[..<colonIndex])
-            var value = String(trimmed[trimmed.index(after: colonIndex)...])
+        let line = String(buffer[..<endIndex])
+        let removeEnd = buffer.index(endIndex, offsetBy: skipCount, limitedBy: buffer.endIndex) ?? buffer.endIndex
+        buffer.removeSubrange(..<removeEnd)
+        
+        return line
+    }
+    
+    private func processLine(_ line: String) -> SSEEvent? {
+        if line.isEmpty {
+            return currentEvent.build()
+        }
+        
+        if line.hasPrefix(":") {
+            return nil
+        }
+        
+        if let colonIndex = line.firstIndex(of: ":") {
+            let field = String(line[..<colonIndex])
+            var value = String(line[line.index(after: colonIndex)...])
             
             if value.hasPrefix(" ") {
                 value.removeFirst()
@@ -68,7 +92,7 @@ public final class DefaultSSEEventDecoder: SSEEventDecoder {
             
             currentEvent.append(field: field, value: value)
         } else {
-            currentEvent.append(field: trimmed, value: "")
+            currentEvent.append(field: line, value: "")
         }
         
         return nil
@@ -83,27 +107,39 @@ public final class DefaultSSEEventDecoder: SSEEventDecoder {
         mutating func append(field: String, value: String) {
             switch field {
             case "id":
-                id = value
+                if !value.contains("\0") {
+                    id = value
+                }
             case "event":
                 event = value
             case "data":
                 dataLines.append(value)
             case "retry":
-                retry = Int(value)
+                if let val = Int(value), val >= 0 {
+                    retry = val
+                }
             default:
                 break
             }
         }
         
         mutating func build() -> SSEEvent? {
-            guard !dataLines.isEmpty else { return nil }
+            guard !dataLines.isEmpty else {
+                self = EventBuilder(id: id)
+                return nil
+            }
             
             let data = dataLines.joined(separator: "\n")
             let event = SSEEvent(id: id, event: event, data: data, retry: retry)
             
-            self = EventBuilder()
+            let preservedId = id
+            self = EventBuilder(id: preservedId)
             
             return event
+        }
+        
+        init(id: String? = nil) {
+            self.id = id
         }
     }
 }

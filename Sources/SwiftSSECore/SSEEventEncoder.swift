@@ -11,7 +11,7 @@ public protocol SSEEventEncoder {
     func encode(_ event: SSEEvent) -> Data
 }
 
-public struct DefaultSSEEventEncoder : SSEEventEncoder {
+public struct DefaultSSEEventEncoder: SSEEventEncoder {
     public init() {}
     
     public func encode(_ event: SSEEvent) -> Data {
@@ -29,7 +29,11 @@ public struct DefaultSSEEventEncoder : SSEEventEncoder {
             result += "retry: \(retry)\n"
         }
         
-        let lines = event.data.split(separator: "\n", omittingEmptySubsequences: false)
+        let normalized = event.data
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        
+        let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
         for line in lines {
             result += "data: \(line)\n"
         }
