@@ -5,8 +5,6 @@
 //  Created by squidypal on 2026-01-19.
 //
 
-// This is the data structure that represents a single Server Sent event message
-
 import Foundation
 
 public struct SSEEvent: Sendable {
@@ -39,4 +37,3 @@ public struct TypedSSEEvent<T: Decodable>: Sendable where T: Sendable {
         self.payload = payload
     }
 }
-

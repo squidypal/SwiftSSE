@@ -5,18 +5,6 @@
 //  Created by squidypal on 2026-01-19.
 //
 
-// This parses the SSE wire format into SSEEvent objects
-
-// Format:
-
-//id: 123
-//event: message
-//data: first line
-//data: second line
-
-//id: 124
-//data: another event
-
 import Foundation
 
 public protocol SSEEventDecoder {
@@ -24,18 +12,28 @@ public protocol SSEEventDecoder {
 }
 
 public final class DefaultSSEEventDecoder: SSEEventDecoder {
-    // buffer holds incomplete data, current event accumulates fields
     private var buffer = ""
     private var currentEvent = EventBuilder()
+    private var hasParsedBOM = false
     
     public init() {}
     
     public func decode(_ chunk: Data) -> [SSEEvent] {
         guard let text = String(data: chunk, encoding: .utf8) else {
-            return[]
+            return []
         }
         
-        buffer += text
+        var processedText = text
+        
+        // Strip UTF-8 BOM (0xEF 0xBB 0xBF) at stream start
+        if !hasParsedBOM {
+            hasParsedBOM = true
+            if processedText.hasPrefix("\u{FEFF}") {
+                processedText.removeFirst()
+            }
+        }
+        
+        buffer += processedText
         var events: [SSEEvent] = []
         
         while let newlineRange = buffer.range(of: "\n") {
@@ -75,7 +73,6 @@ public final class DefaultSSEEventDecoder: SSEEventDecoder {
         
         return nil
     }
-    
     
     private struct EventBuilder {
         var id: String?
